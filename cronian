@@ -1,0 +1,147 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Cron environment
+export LC_ALL=en_US.UTF-8
+export PATH=/usr/local/bin:"$PATH"
+
+BASENAME="$( basename $0 )"
+
+usage() {
+  echo "usage: ${BASENAME} [options] -- <command> [[arg0], [arg1], ..]"
+  
+  echo "  -e, --stderr    log path for stderr"
+  echo "  -o, --stdout    log path for stdout"
+  echo "  -t, --trace     log path for trace"
+  echo "                  Trace is done by bash's `set +e option`"
+  echo ""
+  echo "Cronian logs executions to syslog"
+  echo ""
+  echo "Cronian is able to resolve variables command line"
+}
+
+# Extract last command by either
+# ./script [options] -- <command> [[arg0], [arg1], ..] 
+cmd=()
+options=()
+args=($@)
+for item in ${args[@]}; do
+  case $item in
+    --)
+      options=(${cmd[@]})
+      cmd=()
+      ;;
+    *)
+      cmd+=($item)
+      ;;
+  esac 
+done;
+cmd="${cmd[@]}"
+if [ -z "${options[@]}"]; then
+  lastArg=''
+  for lastArg; do true; done
+  if [ "${lastArg:0:1}" == "-" ]; then
+      >&2 echo "error: command expected"
+      exit 1
+  fi
+  # echo → last: $lastArg 
+  str=${args[@]}
+  argsStrLen=${#str}
+  lastArgLen=${#lastArg}
+  start=$(($argsStrLen-$lastArgLen))
+  options=(${str:0:$start})
+  cmd=($lastArg)
+fi
+if [ -z "$cmd" ]; then
+  error_nocommnad
+  exit 1
+fi
+# echo → options: ${options[@]}
+# echo → cmd: ${cmd[@]}
+
+# options may be followed by one colon to indicate they have a required argument
+if ! options=$(getopt -u -n $BASENAME -o ae:o:c: -l append,err:,out:,command: -- ${options[@]} )
+then
+    # something went wrong, getopt will put out an error message for us
+    exit 1
+fi
+
+PID=$$
+TMP=$(mktemp -d --t $BASENAME.$PID.XXXXXXXX )
+STDOUT_TMP=$TMP/out
+STDERR_TMP=$TMP/err
+TRACE_TMP=$TMP/trace
+
+STDERR_LOG="/dev/null"
+STDOUT_LOG="/dev/null"
+TRACE_LOG="/dev/null"
+echo $TRACE
+exit
+
+set -- $options
+while [ $# -gt 0 ]; do
+  case $1 in
+    -a|--append) aflag="yes" ;;
+    -e|--err) LOG_STDERR="$2"; shift ;;
+    -o|--out) LOH_STDOUT="$2"; shift ;;
+    -t|--trace) LOG_TRACE="$2"; shift ;;
+    # for options with required arguments, an additional shift is required
+    -c|--command) cmd="$1" ; shift;;
+    (--) shift; break;;
+    (-*) echo "$0: error - unrecognized option $1" 1>&2; exit 1;;
+    (*) ;;
+    esac
+    shift
+done
+
+##
+# copied from cronic
+function main {
+  exec 1> >(exec logger -t "$tag" -p user.info)
+  exec 2> >(exec logger -t "$tag" -p user.notice)
+  if [[ $# -eq 2 && ${1:-} = '-c' ]]
+  then as_shell "$2"
+  else as_wrapper "$@"
+  fi
+}
+
+set +uo pipefail
+set +e
+
+"$CMD" 1>$STDOUT_TMP 2>$TRACE
+RESULT=$?
+set -e
+set -uo pipefail
+
+PATTERN="^${PS4:0:1}\\+${PS4:1}"
+if grep -aq "$PATTERN" $TRACE
+then
+    ! grep -av "$PATTERN" $TRACE > $ERR
+else
+    ERR=$TRACE
+fi
+
+
+if [ $RESULT -ne 0 -o -s "$ERR" ]
+    then
+    echo "Cronian detected failure or error output for the command:"
+    echo "$@"
+    echo
+    echo "RESULT CODE: $RESULT"
+    echo
+    echo "ERROR OUTPUT:"
+    cat "$ERR"
+    echo
+    echo "STANDARD OUTPUT:"
+    cat "$OUT"
+    if [ $TRACE != $ERR ]; then
+        echo
+        echo "TRACE-ERROR OUTPUT:"
+        cat "$TRACE"
+    fi
+fi
+
+
+rm -fr $TMP
+exit $EXITCODE
