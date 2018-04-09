@@ -53,3 +53,25 @@ cronan [options] "<command> [[arg0], [arg1], ..]"
 00 06 * * * cronan -m --to user2@example.com "/usr/local/bin/cleanup"
 ```
 
+
+## Usage
+
+```
+usage: cronan [options] [--] <command> [[arg0], [arg1], ..]
+
+  -h, --help      show help
+  -e, --stderr    log path for stderr
+  -o, --stdout    log path for stdout
+  -d, --debug     trace is done by bash's 
+  -l, --label     label for syslog
+  -s, --syslog    use syslog (respective rsyslog)
+  -m, --email     Send email by cronan
+  -a, --always    always send mail even if no error occurred
+  --always        always do send error mails
+  -x              don't prevail exit code and always exit with code 0
+  --to            set email to-address (default: MAILTO)
+  --from          set email from-address;
+  --cc            set email cc-address;
+  --bcc           set email bcc-address;
+  -q, --quiet     no ouptut at all
+```
