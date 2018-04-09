@@ -1,0 +1,7 @@
+#!/bin/bash
+
+>&1 echo "HAS_OUTPUT1"
+badcommand
+>&1 echo "HAS_OUTPUT2"
+
+exit 1

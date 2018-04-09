@@ -1,0 +1,383 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Replace process stdouts with syslog
+# exec 1> >(exec logger -t "$TAG" -p user.info)
+# exec 2> >(exec logger -t "$TAG" -p user.notice)
+
+# https://github.com/instacart/ohmycron/blob/master/ohmycron
+
+# Cron environment
+export LC_ALL=en_US.UTF-8
+export PATH=/usr/local/bin:"$PATH"
+
+BASENAME="$( basename $0 )"
+SCRIPT_PATH="$( cd -P "$( echo "${BASH_SOURCE[0]%/*}" )"; pwd )"
+
+##
+# Functions 
+
+exitcode_to_string () {
+  code=$1
+  case 1 in
+    $(($code==0))) echo "successful termination (EX_OK)";;
+    $(($code==1))) echo "general error";;
+    $(($code==2))) echo "misuse of shell builtins";;
+    $(($code==64))) echo "command line usage error (EX_USAGE)";;
+    $(($code==65))) echo "data format error (EX_DATAERR)";;
+    $(($code==66))) echo "cannot open input (EX_NOINPUT)";;
+    $(($code==67))) echo "addressee unknown (EX_NOUSER)";;
+    $(($code==68))) echo "host name unknown (EX_NOHOST)";;
+    $(($code==69))) echo "service unavailable (EX_UNAVAILABLE)";;
+    $(($code==70))) echo "internal software error (EX_SOFTWARE)";;
+    $(($code==71))) echo "system error (e.g., can't fork) (EX_OSERR)";;
+    $(($code==72))) echo "critical OS file missing (EX_OSFILE)";;
+    $(($code==73))) echo "can't create (user) output file (EX_CANTCREAT)";;
+    $(($code==74))) echo "input/output error (EX_IOERR)";;
+    $(($code==75))) echo "temp failure; user is invited to retry (EX_TEMPFAIL)";;
+    $(($code==76))) echo "remote error in protocol (EX_PROTOCOL)";;
+    $(($code==77))) echo "permission denied (EX_NOPERM)";;
+    $(($code==78))) echo "configuration error";;
+    $(($code==126))) echo "command invoked cannot execute";;
+    $(($code==127))) echo "command not found";;
+    $(($code==128))) echo "invalid argument to exit";;
+    $(($code>128 && $code<255))) echo "fatal error signal";;
+    $(($code==255))) echo "exit status out of range" ;;
+    (*) echo "unknown" ;;
+   esac; 
+}
+
+
+usage() {
+  echo "usage: ${BASENAME} [options] [--] <command> [[arg0], [arg1], ..]"
+  echo ""
+  echo "  -h, --help     show help"
+  echo "  -e, --stderr    log path for stderr"
+  echo "  -o, --stdout    log path for stdout"
+  echo "  -d, --debug    Trace is done by bash's `set +e option`"
+  echo "  -l, --label     Label for syslog"
+  echo "  -s, --syslog    Use syslog (respective rsyslog)"
+  echo "  -m, --email     Send email by cronan"
+  echo "  -a, --always     Always send mail even if no error occurred"
+  echo "  --always        Always do send error mails"
+  echo "  -x              Don't prevail exit code and always exit with code 0"
+  echo "  --to            Set email to-address (default: MAILTO)"
+  echo "  --from          Set email from-address;"
+  echo "  --cc            Set email cc-address;"
+  echo "  --bcc           Set email bcc-address;"
+  echo "  -q, --quiet     No ouptut at all"
+  echo ""
+  echo "Cronan logs executions to syslog"
+  echo ""
+  echo "Cronan is able to resolve variables command line"
+}
+
+err() {
+  >&2 echo "${BASENAME}: error - $@"
+}
+
+# Execution as shell
+IS_SHELL=0
+if [[ $# -eq 2 && ${1:-} = '-c' ]]
+then
+  # reset args so we operate like we're in the wrapper
+  set -- "${CRONAN_FLAGS} $2"
+  IS_SHELL=1
+fi
+
+# Extract last command by either
+# ./script [options] -- <command> [[arg0], [arg1], ..]
+# or ./script [options] "<command> [[arg0], [arg1], ..]"
+cmd=""
+options=""
+args=($@)
+for item in ${args[@]}; do
+  case $item in
+    --)
+      options="${parts[@]}"
+      parts=()
+      ;;
+    *)
+      parts+=($item)
+      ;;
+  esac 
+done;
+cmd="${parts[@]}"
+# echo $options -- $cmd
+if [ -z "${cmd}" ] || [ "${cmd:0:1}" == "-" ]; then
+  cmd="${@: -1}"
+  all="$@"
+  allLen=${#all}
+  cmdLen=${#cmd}
+  start=$(($allLen-$cmdLen))
+  options=${all:0:$start}
+fi
+# echo $options -- $cmd
+if [ -n "$cmd" ] && [ "${cmd:0:1}" == "-" ]; then
+  err "invalid arguments"
+  exit 2
+fi
+
+# echo → options: ${options[@]}
+# echo → cmd: ${cmd[@]}
+
+# options may be followed by one colon to indicate they have a required argument
+if ! options=$(getopt -u -n $BASENAME -o hadmxt:e:o: -l help,debug,tag:,err:,out:,to:,cc:,bcc:,command: -- ${options[@]} )
+then
+    # something went wrong, getopt will put out an error message for us
+    exit 2
+fi
+
+
+PID=$$
+TAG="cronan"
+TMP=$( mktemp -d --t $BASENAME.$PID.XXXXXXXX )
+STDOUT_TMP=$TMP/out
+STDERR_TMP=$TMP/err
+TRACE_TMP=$TMP/trace
+touch $STDOUT_TMP
+touch $STDERR_TMP
+touch $TRACE_TMP
+OPT_SYSLOG=1
+STDERR_LOG="/dev/null"
+STDOUT_LOG="/dev/null"
+MAIL_TO="${MAILTO:-}" # use from cron enviornment if possible
+MAIL_FROM="${MAILFROM:-}"
+MAIL_CC=""
+MAIL_BCC=""
+MAIL_SUBJECT=""
+OPT_DEBUG=0
+OPT_MAIL=0
+OPT_PRINTENV=0
+OPT_ALWAYS=0
+OPT_PREVAIL_EXITCODE=1
+
+set -- $options
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    -t|--tag) TAG="$2"; shift ;;
+    -f|--format) FORMAT="$2"; shift ;;
+    -m|--email) OPT_MAIL=1; shift ;;
+    -a|--always) OPT_ALWAYS=1; shift ;;
+    --to) MAIL_TO="$2"; OPT_MAIL=1; shift ;;
+    --cc) MAIL_CC="$2"; OPT_MAIL=1; shift ;;
+    --bcc) MAIL_BCC="$2"; OPT_MAIL=1; shift ;;
+    -d|--debug) OPT_DEBUG=1; OPT_PRINTENV=1 ;;
+    -x) OPT_PREVAIL_EXITCODE=0 ;;
+    -e|--err) STDERR_LOG="$2"; if [ ! -e ${STDERR_LOG} ]; then touch $STDERR_LOG; fi; shift ;;
+    -o|--out) STDOUT_LOG="$2"; if [ ! -e ${STDOUT_LOG} ]; then touch $STDOUT_LOG; fi; shift ;;
+    (--) shift; break;;
+    (-*) echo "$BASENAME: error - unrecognized option $1" 1>&2; exit 1;;
+    (*) ;;
+    esac
+    shift
+done
+
+if [ -z "${cmd:-}" ]; then
+  err "no command specified!"
+  exit 1
+fi
+if [ "${OPT_MAIL}" -eq 1 ] && [ -z "${MAIL_TO:-}" ]; then
+  err "$BASENAME: error - no mail-to address specified"
+  exit 2
+fi
+
+##
+# copied from cronic
+function main {
+  if [[ $# -eq 2 && ${1:-} = '-c' ]]
+  then as_shell "$2"
+  else as_wrapper "$@"
+  fi
+}
+
+function as_shell {
+  local code="$1" name=
+  if name="$(look_for_explicit_lock_token "$code")"
+  then
+    run "$name" bash -c "$code"
+  else
+    name="$(awk '{print $1}' <<<"$code")"
+    name="${name##*/}"
+    run "$name" bash -c "$code"
+  fi
+}
+
+TRACE_PATTERN="^${PS4:0:1}\\+${PS4:1}"
+
+CMD_HAD_ERROR=0
+trace_logger() {
+  while read line; do
+    if [ ${CMD_HAD_ERROR} -ne 0 ]; then
+      prefix_log [CMD] "Errors occured" >> $STDERR_LOG
+      CMD_HAD_ERROR=1
+    fi
+    if [ ${OPT_SYSLOG} -eq 1 ]; then
+      prefix_syslog $line | logger -t "${TAG}" -p user.error
+    fi
+    if [ ${OPT_DEBUG} -eq 1 ]; then
+      # echo $line >> $TRACE_TMP
+      trace_line="$(echo $line | grep -a "$TRACE_PATTERN" 2>/dev/null )"
+      if [ -n "$trace_line" ]; then
+        prefix_tmp $trace_line >> $TRACE_TMP  
+        prefix_tmp $trace_line >> $STDERR_TMP
+      else
+        prefix_tmp $trace_line >> $STDERR_TMP
+        prefix_log [ERR] $line >> $STDERR_LOG
+      fi
+    else
+      prefix_log [ERR] $line >> $STDERR_LOG
+      prefix_tmp $line >> $STDERR_TMP
+    fi
+  done
+}
+
+
+out_logger() { 
+ while read line; do
+    if [ ${OPT_SYSLOG} -eq 1 ]; then
+      prefix_syslog $line | logger -t "${TAG}" -p user.info
+    fi
+    prefix_log [OUT] $line >> $STDOUT_LOG
+    prefix_tmp $line >> $STDOUT_TMP
+  done 
+}
+
+prefix_log() {
+  local child_pid=$$
+  local parent_pid=$PPID
+  echo "[$(date -Iseconds)] (${parent_pid}) (${child_pid}) $@"
+}
+
+prefix_syslog() {
+  local child_pid=$$
+  local parent_pid=$PPID
+  echo "[$(date -Iseconds)] (${parent_pid}) (${child_pid}) $@"
+}
+
+prefix_tmp() {
+  local child_pid=$$
+  echo "[$(date +%H:%M:%S)] (${child_pid}) $@"
+}
+
+START_LINE_TMP="$(prefix_tmp)${cmd}"
+prefix_log "[CMD] Exec: ${cmd}" >> $STDOUT_LOG
+set +euo pipefail
+# if [ ${DEBUG_CMD} -eq 1 ]; then set +e; fi;
+
+stdbuf -oL $cmd 2> >(trace_logger) 1> >(out_logger)
+EXITCODE=$?
+# if [ ${DEBUG_CMD} -eq 1 ]; then ; fi;
+set -euo pipefail
+sync
+prefix_log  "[CMD] Exit [$EXITCODE] $(exitcode_to_string ${EXITCODE})" >> $STDOUT_LOG
+EXIT_LINE_TMP="$(prefix_tmp)[$EXITCODE] $(exitcode_to_string ${EXITCODE})"
+
+if [ -s $STDERR_TMP ]; then
+  CMD_HAD_ERROR=1
+fi
+
+output() {
+  if [ $CMD_HAD_ERROR -eq 1 ]; then
+    echo "Cronan(${PID}) encountered failure for following command execution:"
+  else
+    echo "Let me tell you the story of Cronan(${PID}) command execution:"
+  fi
+  echo
+  echo "# COMMAND"
+  echo 
+  echo "$START_LINE_TMP"
+  echo
+  echo
+  echo "# EXITCODE"
+  echo
+  echo "$EXIT_LINE_TMP"
+  echo
+  if [ $CMD_HAD_ERROR -eq 1 ] && [ ${EXITCODE} -eq 0 ]; then
+    echo "Please fix exit code in your script!"
+    echo
+  fi
+  echo
+  if [ $CMD_HAD_ERROR -eq 1 ]; then
+    echo "# STDERR "
+    echo
+    if [ ! -s $STDERR_TMP ]; then
+      echo "(empty)"
+    else
+      cat $STDERR_TMP
+    fi
+    echo
+    echo
+  fi
+  echo "# STDOUT "
+  echo
+  if [ ! -s $STDOUT_TMP ]; then
+    echo "(empty)"
+  else
+    cat $STDOUT_TMP
+  fi
+  echo
+  echo
+  if [ $CMD_HAD_ERROR -eq 1 ] && [ -s $TRACE_TMP ] && [ $(stat -c %s $TRACE_TMP) -ne $(stat -c %s $STDERR_TMP) ]; then
+    echo "# TRACE"
+    echo
+    cat "$TRACE_TMP"
+    echo
+    echo
+  fi
+  if [ $CMD_HAD_ERROR -eq 1 ] && [ $OPT_PRINTENV -eq 1 ]; then
+    echo "# ENVIRONMENT"
+    echo
+    printenv
+  fi
+}
+
+send_mail() {
+  header=()
+  if [ -n "$MAIL_FROM" ]; then
+    header+=("From: $MAIL_FROM")
+  fi
+  header+=("To: $MAIL_TO")
+  if [ -n "$MAIL_CC" ]; then
+    header+=("CC: $MAIL_CC")
+  fi
+  if [ -n "$MAIL_BCC" ]; then
+    header+=("BCC: $MAIL_BCC")
+  fi
+  if [ $CMD_HAD_ERROR -eq 1 ] && [ $EXITCODE -ne 0 ]; then
+    indicator="!"
+  else
+    indicator="$EXITCODE"
+  fi
+  if [ -n "$MAIL_SUBJECT" ]; then
+    header+=("Subject: [$indicator] $MAIL_SUBJECT")
+  else
+    header+=("Subject: [$indicator] $( echo ${cmd} )")
+  fi
+  header=$( IFS=$'\n'; echo -e "${header[*]}" )
+  echo -e "${header}\n\n$(output)"
+}
+
+
+if [ $CMD_HAD_ERROR -eq 1 ] || [ $OPT_ALWAYS -eq 1 ]; then
+  if [ $OPT_MAIL -eq 1 ]; then
+    success=$( send_mail | sendmail -t && echo 0 || echo 1 )
+    if [ "${success}" -ne 0 ]; then
+      err "sending mail failed. falling back to cron output";
+      echo --
+      echo
+      output
+    fi
+  else
+    output
+  fi
+fi
+
+rm -fr $TMP
+
+if [ $OPT_PREVAIL_EXITCODE -ne 1 ]; then
+  exit 0
+fi
+exit $EXITCODE

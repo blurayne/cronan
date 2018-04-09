@@ -1,0 +1,17 @@
+#!/bin/bash
+
+SCRIPT_PATH="$( cd -P "$( echo "${BASH_SOURCE[0]%/*}" )"; pwd )"
+
+
+if [[ $# -eq 2 && ${1:-} = '-c' ]]
+then
+  cmd="$2"
+  set -- "{$CRONAN_FLAGS} $cmd"
+  echo shell "$0" x "$1" x "$2"
+  # bash -c "$cmd"
+  $cmd
+else
+  echo wrapper "$@"
+  echo wrapper "$0" x "$1" x "$2"
+  "$cmd"
+fi

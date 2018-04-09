@@ -1,0 +1,6 @@
+#!/bin/bash
+
+>&2 echo "HAS_ERROR1"
+>&2 echo "HAS_ERROR2"
+
+exit 0

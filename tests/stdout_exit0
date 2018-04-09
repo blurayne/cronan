@@ -1,0 +1,6 @@
+#!/bin/bash
+
+>&1 echo "HAS_OUTPUT1"
+>&1 echo "HAS_OUTPUT2"
+
+exit 0

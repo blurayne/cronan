@@ -1,0 +1,8 @@
+#!/bin/bash
+
+>&1 echo "HAS_OUTPUT1"
+>&1 echo "HAS_OUTPUT2"
+>&2 echo "HAS_ERROR1"
+>&2 echo "HAS_ERROR2"
+
+exit 0
