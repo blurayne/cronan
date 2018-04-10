@@ -6,22 +6,33 @@ Please refer [Wikipedia cron](https://en.wikipedia.org/wiki/Cron), [Ubuntu Cron]
 
 ## Status
 
-Work in progres - alpha quality! Do not yet use in production!
-
+**Work in progres - alpha quality! Do not yet use in production!**
 
 ## Features
 
 - Integration with syslog (and therefore with rsyslog and the ELK stack)
 - Run as shell within crontab
 - Run as command line wrapper
-- Better error emails (Exit code in subject)
+- Better error emails (e.g. exit code in subject)
 - Better handling of exit codes, stdout and stderr (only get emails if errors occured)
 - Tests
 
-## Future 
+## Planned 
 
-- Semaphores
- 
+- Merge output of STDOUT and STDERR together (-m). If you only specify stdout for log this occurs automaticaly<br/>
+  (Note: sorting might not be possible if you only rely on timestamp in log lines)
+- Rely more on environment vars (CRONAN_OPTS)
+- Allow config files to overwrite environment
+- Mutex locks
+- Templates for E-Mail
+- Templates for Logging (syslog, logfile, default), e.g. CRONAN_TPL_(FILE|SYSLOG|MAIL|EXT)_(OUT|ERR|CMD)
+- Named Templates (like default, short, notime)
+- Mutex locks
+- Better control over output
+- Pipe to external program (e.g. for HipChat)
+- Template files (?)
+
+
 ## Replacement
 
 ### As shell replacement
@@ -75,3 +86,8 @@ usage: cronan [options] [--] <command> [[arg0], [arg1], ..]
   --bcc           set email bcc-address;
   -q, --quiet     no ouptut at all
 ```
+
+Cronan output to cron only occurs on errors.
+
+If you specify a logger like syslog or email output if not errors occur is suppressed (unless you specify the -a flag). 
+Also, if logging to specified logger fails (e.g. sendmail) an output to stdout occurs.

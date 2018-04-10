@@ -129,6 +129,36 @@ then
     exit 2
 fi
 
+CRONAN_TPL_FILE_CMD='[$(date -Iseconds)] (${parent_pid}) (${child_pid}) [CMD] $@'
+CRONAN_TPL_FILE_OUT='[$(date -Iseconds)] (${parent_pid}) (${child_pid}) [OUT] $@'
+CRONAN_TPL_FILE_ERR='[$(date -Iseconds)] (${parent_pid}) (${child_pid}) [ERR] $@'
+
+CRONAN_TPL_SYSLOG_CMD='(${child_pid}) $@'
+CRONAN_TPL_SYSLOG_OUT='(${child_pid}) $@'
+CRONAN_TPL_SYSLOG_ERR='(${child_pid}) $@'
+
+CRONAN_TPL_MAIL_CMD='[$(date +%H:%M:%S)] (${child_pid}) $@'
+CRONAN_TPL_MAIL_OUT='[$(date +%H:%M:%S)] (${child_pid}) $@'
+CRONAN_TPL_MAIL_ERR='[$(date +%H:%M:%S)] (${child_pid}) $@'
+
+
+log() {
+  local child_pid=$$
+  local parent_pid=$PPID
+  echo "[$(date -Iseconds)] (${parent_pid}) (${child_pid}) $@"
+}
+
+prefix_syslog() {
+  local child_pid=$$
+  local parent_pid=$PPID
+  echo "[$(date -Iseconds)] (${parent_pid}) (${child_pid}) $@"
+}
+
+prefix_tmp() {
+  local child_pid=$$
+  echo "[$(date +%H:%M:%S)] (${child_pid}) $@"
+}
+
 
 PID=$$
 TAG="cronan"
@@ -152,6 +182,7 @@ OPT_MAIL=0
 OPT_PRINTENV=0
 OPT_ALWAYS=0
 OPT_PREVAIL_EXITCODE=1
+TRACE_PATTERN="^${PS4:0:1}\\+${PS4:1}"
 
 set -- $options
 while [ $# -gt 0 ]; do
@@ -184,34 +215,13 @@ if [ "${OPT_MAIL}" -eq 1 ] && [ -z "${MAIL_TO:-}" ]; then
   exit 2
 fi
 
-##
-# copied from cronic
-function main {
-  if [[ $# -eq 2 && ${1:-} = '-c' ]]
-  then as_shell "$2"
-  else as_wrapper "$@"
-  fi
-}
 
-function as_shell {
-  local code="$1" name=
-  if name="$(look_for_explicit_lock_token "$code")"
-  then
-    run "$name" bash -c "$code"
-  else
-    name="$(awk '{print $1}' <<<"$code")"
-    name="${name##*/}"
-    run "$name" bash -c "$code"
-  fi
-}
-
-TRACE_PATTERN="^${PS4:0:1}\\+${PS4:1}"
 
 CMD_HAD_ERROR=0
 trace_logger() {
   while read line; do
     if [ ${CMD_HAD_ERROR} -ne 0 ]; then
-      prefix_log [CMD] "Errors occured" >> $STDERR_LOG
+      # prefix_log [CMD] "Errors occured" >> $STDERR_LOG
       CMD_HAD_ERROR=1
     fi
     if [ ${OPT_SYSLOG} -eq 1 ]; then
